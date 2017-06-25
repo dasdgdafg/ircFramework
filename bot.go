@@ -22,15 +22,16 @@ type dbOp struct {
 }
 
 type IRCBot struct {
-	Server         string
-	Port           string
-	Nickname       string
-	Ident          string
-	Realname       string
-	Password       string
-	Statefile      string
-	ListenToStdin  bool
-	MessageHandler func(linesToSend chan<- string, nick string, channel string, msg string)
+	Server           string
+	Port             string
+	Nickname         string
+	Ident            string
+	Realname         string
+	Password         string
+	Statefile        string
+	ListenToStdin    bool
+	MessageHandler   func(linesToSend chan<- string, nick string, channel string, msg string)
+	ExtraLinesToSend chan string
 
 	state channelState
 	// regexes that depend on the nick
@@ -45,7 +46,7 @@ func (b *IRCBot) Run() {
 		log.Println("no statefile, using mybot.state")
 		b.Statefile = "mybot.state"
 	}
-    b.state = channelState{b.Statefile}
+	b.state = channelState{b.Statefile}
 	log.Println("starting up")
 
 	b.vhostSetRegex = regexp.MustCompile("^[^ ]* 396 " + b.Nickname)                    // :server 396 nick host :is now your visible host
@@ -85,6 +86,16 @@ func (b *IRCBot) Run() {
 	go b.writeToDb(dbWrites)
 	linesToSend <- "NICK " + b.Nickname
 	linesToSend <- "USER " + b.Ident + " * 8 :" + b.Realname
+
+	if b.ExtraLinesToSend != nil {
+		go func() {
+			for {
+				// send any values on ExtraLinesToSend over to linesToSend
+				linesToSend <- (<-b.ExtraLinesToSend)
+			}
+		}()
+	}
+
 	<-errors
 }
 
