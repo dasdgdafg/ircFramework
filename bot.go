@@ -7,14 +7,9 @@ import (
 	"log"
 	"net"
 	"os"
-	"regexp"
+	"strings"
 	"time"
 )
-
-// constant regexes
-var pingRegex = regexp.MustCompile("^PING :(.*)$")                              // PING :message
-var motdEndRegex = regexp.MustCompile("^[^ ]* (?:376|422)")                     // :server 376 nick :End of /MOTD command.
-var privmsgRegex = regexp.MustCompile("^:([^!]*)![^ ]* PRIVMSG ([^ ]*) :(.*)$") // :nick!ident@host PRIVMSG #channel :message
 
 type dbOp struct {
 	add     bool
@@ -34,11 +29,6 @@ type IRCBot struct {
 	ExtraLinesToSend chan string
 
 	state channelState
-	// regexes that depend on the nick
-	vhostSetRegex *regexp.Regexp
-	inviteRegex   *regexp.Regexp
-	kickRegex     *regexp.Regexp
-	banRegex      *regexp.Regexp
 }
 
 func (b *IRCBot) Run() {
@@ -48,11 +38,6 @@ func (b *IRCBot) Run() {
 	}
 	b.state = channelState{b.Statefile}
 	log.Println("starting up")
-
-	b.vhostSetRegex = regexp.MustCompile("^[^ ]* 396 " + b.Nickname)                    // :server 396 nick host :is now your visible host
-	b.inviteRegex = regexp.MustCompile("^([^ ]*) INVITE " + b.Nickname + " :(.*)$")     // :nick!ident@host INVITE nick :#channel
-	b.kickRegex = regexp.MustCompile("^([^ ]*) KICK ([^ ]*) " + b.Nickname + " :(.*)$") // :nick!ident@host KICK #channel nick :message
-	b.banRegex = regexp.MustCompile("^[^ ]* 474 " + b.Nickname + " ([^ ]*) :(.*)$")     // :server 474 nick #channel :Cannot join channel (+b)
 
 	t := time.Now()
 	ts := t.Format("Jan 2 2006 15-04-05 ET")
@@ -156,30 +141,63 @@ func writeLines(socket net.Conn, errors chan<- bool, linesToSend <-chan string, 
 }
 
 func (b *IRCBot) processLine(line string, linesToSend chan<- string, dbWrites chan<- dbOp) {
-	if pingRegex.MatchString(line) {
-		linesToSend <- "PONG :" + pingRegex.FindStringSubmatch(line)[1]
-	} else if motdEndRegex.MatchString(line) {
-		linesToSend <- "PRIVMSG nickserv :identify " + b.Password
-	} else if b.vhostSetRegex.MatchString(line) {
-		log.Println("joining channels")
-		go b.joinChannels(linesToSend)
-	} else if privmsgRegex.MatchString(line) {
-		matches := privmsgRegex.FindStringSubmatch(line)
-		b.processPrivmsg(linesToSend, matches[1], matches[2], matches[3])
-	} else if b.inviteRegex.MatchString(line) {
-		matches := b.inviteRegex.FindStringSubmatch(line)
-		log.Println("joining " + matches[2] + ", invited by " + matches[1])
-		linesToSend <- "JOIN " + matches[2]
-		dbWrites <- dbOp{true, matches[2]}
-	} else if b.kickRegex.MatchString(line) {
-		matches := b.kickRegex.FindStringSubmatch(line)
-		log.Println("kicked from " + matches[2] + " by " + matches[1] + " because " + matches[3])
-		dbWrites <- dbOp{false, matches[2]}
-	} else if b.banRegex.MatchString(line) {
-		matches := b.banRegex.FindStringSubmatch(line)
-		log.Println("can't join " + matches[1] + " because " + matches[2])
-		dbWrites <- dbOp{false, matches[2]}
+	strs := strings.SplitN(line, " ", 4)
+	if len(strs) >= 2 {
+		if strs[0] == "PING" {
+			// PING :message
+			linesToSend <- "PONG :" + afterColon(strs[1])
+		} else if strs[1] == "376" || strs[1] == "422" {
+			// :server 376 nick :End of /MOTD command.
+			linesToSend <- "PRIVMSG nickserv :identify " + b.Password
+		} else if strs[1] == "396" && strs[2] == b.Nickname {
+			// :server 396 nick host :is now your visible host
+			log.Println("joining channels")
+			go b.joinChannels(linesToSend)
+		} else if strs[1] == "PRIVMSG" {
+			// :nick!ident@host PRIVMSG #channel :message
+			b.processPrivmsg(linesToSend, extractNick(strs[0]), strs[2], afterColon(strs[3]))
+		} else if strs[1] == "INVITE" && strs[2] == b.Nickname {
+			// :nick!ident@host INVITE nick :#channel
+			channel := afterColon(strs[3])
+			log.Println("joining " + channel + ", invited by " + strs[1])
+			linesToSend <- "JOIN " + channel
+			dbWrites <- dbOp{true, channel}
+		} else if strs[1] == "KICK" {
+			// :nick!ident@host KICK #channel nick :message
+			nickAndMsg := strings.SplitN(strs[3], " ", 1)
+			if nickAndMsg[0] == b.Nickname {
+				message := ""
+				if len(nickAndMsg) > 1 {
+					message = nickAndMsg[1]
+				}
+				log.Println("kicked from " + strs[2] + " by " + strs[0] + " because " + message)
+				dbWrites <- dbOp{false, strs[2]}
+			}
+		} else if strs[1] == "474" && strs[2] == b.Nickname {
+			// :server 474 nick #channel :Cannot join channel (+b)
+			log.Println("can't join " + strs[3])
+			dbWrites <- dbOp{false, strings.Split(strs[3], " ")[0]}
+		}
 	}
+}
+
+// :nick!ident@host -> nick
+func extractNick(nick string) string {
+	start := strings.Index(nick, ":")
+	end := strings.Index(nick, "!")
+	if start >= 0 && end > start {
+		return nick[start+1 : end]
+	}
+	return ""
+}
+
+// return the part of the string after the first :
+func afterColon(str string) string {
+	start := strings.Index(str, ":")
+	if start >= 0 {
+		return str[start+1:]
+	}
+	return ""
 }
 
 func (b *IRCBot) joinChannels(linesToSend chan<- string) {
