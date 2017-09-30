@@ -159,12 +159,12 @@ func (b *IRCBot) processLine(line string, linesToSend chan<- string, dbWrites ch
 		} else if strs[1] == "INVITE" && strs[2] == b.Nickname {
 			// :nick!ident@host INVITE nick :#channel
 			channel := afterColon(strs[3])
-			log.Println("joining " + channel + ", invited by " + strs[1])
+			log.Println("joining " + channel + ", invited by " + strs[0])
 			linesToSend <- "JOIN " + channel
 			dbWrites <- dbOp{true, channel}
 		} else if strs[1] == "KICK" {
 			// :nick!ident@host KICK #channel nick :message
-			nickAndMsg := strings.SplitN(strs[3], " ", 1)
+			nickAndMsg := strings.SplitN(strs[3], " ", 2)
 			if nickAndMsg[0] == b.Nickname {
 				message := ""
 				if len(nickAndMsg) > 1 {
