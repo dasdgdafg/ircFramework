@@ -34,7 +34,15 @@ type IRCBot struct {
 	internalLinesToSend chan string
 	dbWrites            chan dbOp
 	logger              *log.Logger
+	lastError           time.Time
+	retryDelay          time.Duration
 }
+
+// default time to wait before reconnecting, increases exponentially
+var defaultRetryTimeout = 10 * time.Second
+
+// time to wait for a given read/write operation before assuming the connection is dead
+var socketTimeout = 10 * time.Minute
 
 func (b *IRCBot) Run() {
 	if b.Statefile == "" {
@@ -122,7 +130,18 @@ func (b *IRCBot) disconnected(kys chan struct{}, socket net.Conn) {
 		}
 		close(kys)
 		// retry with exponential backoff
-		// TODO: exp backoff
+		if !b.lastError.IsZero() {
+			// reset the timeout if the connection was working for an hour
+			if time.Since(b.lastError) > time.Hour {
+				b.retryDelay = defaultRetryTimeout
+			} else {
+				b.retryDelay *= 2
+			}
+			log.Println("waiting before reconnecting")
+			<-time.After(b.retryDelay)
+		}
+		b.lastError = time.Now()
+
 		b.reconnect()
 	}
 }
@@ -158,6 +177,7 @@ func (b *IRCBot) readLines(kys chan struct{}, socket net.Conn) {
 		case _, _ = <-kys:
 			return
 		default:
+			socket.SetReadDeadline(time.Now().Add(socketTimeout))
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				log.Println(err)
