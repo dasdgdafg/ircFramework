@@ -53,7 +53,7 @@ func (b *IRCBot) Run() {
 	log.Println("starting up")
 
 	t := time.Now()
-	ts := t.Format("2006/01/02 15-04-05")
+	ts := t.Format("2006-01-02 15-04-05")
 
 	logFilename := "logs/" + ts + ".txt"
 	f, err := os.Create(logFilename)
