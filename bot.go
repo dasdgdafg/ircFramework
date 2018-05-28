@@ -69,6 +69,7 @@ func (b *IRCBot) Run() {
 	b.userLinesToSend = make(chan string, 5)  // lines the user wants to send
 	b.internalLinesToSend = make(chan string) // lines generated internally by this framework
 	b.dbWrites = make(chan dbOp, 2)
+    b.retryDelay = defaultRetryTimeout
 
 	go b.reconnect()
 
@@ -125,9 +126,7 @@ func (b *IRCBot) disconnected(kys chan struct{}, socket net.Conn) {
 		return
 	default:
 		// channel is still open, close it and the socket
-		if socket != nil {
-			socket.Close()
-		}
+		closeSocket(socket)
 		close(kys)
 		// retry with exponential backoff
 		if !b.lastError.IsZero() {
@@ -143,6 +142,14 @@ func (b *IRCBot) disconnected(kys chan struct{}, socket net.Conn) {
 		b.lastError = time.Now()
 
 		b.reconnect()
+	}
+}
+
+func closeSocket(socket net.Conn) {
+	// socket.Close() sometimes panics
+	defer func() { recover() }()
+	if socket != nil {
+		socket.Close()
 	}
 }
 
